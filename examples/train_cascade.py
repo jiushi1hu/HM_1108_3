@@ -83,10 +83,14 @@ def main(argv=None, *, experiment_runner=run_parallel_experiment,
     parser.add_argument('--episode-log',type=Path,
                         help='New summary JSONL path; also creates compact <stem>_seedN_steps.csv files')
     parser.add_argument('--plot-python',default=sys.executable,help='Python interpreter with interactive Matplotlib')
+    parser.add_argument('--plot-output',type=Path,
+                        help='Figure output stem: save _training.png, _evaluator_return.png and _violation_rates.png without requiring --episode-log')
     parser.add_argument('--no-plot',action='store_true',help='Run without opening plot windows')
     if parser_extension is not None:
         parser_extension(parser)
     args = parser.parse_args(argv)
+    if args.no_plot and args.plot_output is not None:
+        parser.error('--plot-output requires plotting; remove --no-plot')
     if (args.trajectory_diagnostics or args.save_checkpoints) and args.episode_log is None:
         parser.error('--trajectory-diagnostics and --save-checkpoints require --episode-log')
     if args.checkpoint_interval < 0:
@@ -190,7 +194,7 @@ def main(argv=None, *, experiment_runner=run_parallel_experiment,
             if path.exists():
                 parser.error('Counterfactual trace already exists: '+str(path))
         if not args.no_plot:
-            for path in plot_output_paths(args.episode_log).values():
+            for path in plot_output_paths(args.episode_log, args.plot_output).values():
                 if path.exists():
                     parser.error('Figure file already exists: '+str(path))
     exp['diagnostics'] = args.diagnostics or args.trajectory_diagnostics

@@ -1,8 +1,9 @@
 """Observational, same-state dispatch attainability for every reservoir.
 
 Only one reservoir's command varies in each counterfactual. Starting storage,
-current external inflows, action-date bounds and the other actors' originally
-sampled commands stay fixed. A same-day witness does not establish a better
+current external inflows, action-date bounds, active terminal reachability
+constraints and the other actors' originally sampled commands stay fixed. A
+same-day witness does not establish a better
 multi-day policy; an unattainable requirement in the saved state does not prove
 that the state, or the observed long-run violation rate, was unavoidable.
 
@@ -25,7 +26,8 @@ CLASSIFICATION_DEFINITIONS = {
     'same_state_head_limit': 'All continuous current-state power choices fail despite optimistic water, dispatch and hardware bounds.',
 }
 SCOPE = ('one command changes; same starting storage, current forcing, next-state bounds, '
-         'and other originally sampled commands; no future inflows or trajectory changes')
+         'terminal reachability constraints and other originally sampled commands; '
+         'no additional forcing or trajectory changes')
 LIMITATION = ('Same-state restrictions do not prove exogenous or globally unavoidable failures. '
               'A meeting alternative may change other services and future storage; no long-term '
               'optimality or improvement claim is made.')
@@ -168,8 +170,10 @@ class _TransitionAnalysis:
         if key not in self.witnesses:
             actions = self.actions.copy()
             actions[i] = normalized
+            constraints = self.row.get('storage_constraints')
+            options = {} if constraints is None else dict(storage_constraints=constraints)
             replay = self.physics.transition(self.row['storage_start'], self.row['external'],
-                                              actions, self.lower, self.upper)
+                                              actions, self.lower, self.upper, **options)
             self.witnesses[key] = replay
         replay = self.witnesses[key]
         if (not np.isclose(replay['release'][i], release, rtol=1e-10, atol=1e-7) or

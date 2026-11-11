@@ -73,6 +73,50 @@ def accumulate(summary, residual, scale):
 
 
 class CascadeMassBalanceTest(unittest.TestCase):
+    def test_five_year_terminal_storage_without_annual_resets(self):
+        from harl.envs.cascade_reservoir.episodes import episode_environment, training_windows
+        physical = yaml.safe_load((ROOT/'harl/configs/envs_cfgs/cascade_reservoir.yaml').read_text())
+        self.assertTrue(physical['terminal_storage_equal_initial'])
+        data = CascadeData(ROOT/'data/cascade_reservoir_new', physical)
+        windows = training_windows(data)
+        rng = np.random.RandomState(723)
+        for years in (windows[1965], windows[1971], list(data.evaluation_years)):
+            env = episode_environment(data, physical, years)
+            initial = env.storage.copy()
+            intermediate_year_end_errors = []
+            for step in range(env.episode_days):
+                command = rng.randint(env.action_bins, size=5)
+                if step % 31 == 0:
+                    command.fill(0 if step % 62 == 0 else env.action_bins-1)
+                env.step(command)
+                row = env.last_transition
+                np.testing.assert_allclose(row['storage_end']-row['storage_start'],
+                    (row['inflow']-row['release'])*86400., rtol=0., atol=1e-4)
+                np.testing.assert_allclose(row['inflow'][1:],
+                    row['external'][1:]+row['release'][:-1], rtol=0., atol=1e-10)
+                if step < env.episode_days-1:
+                    self.assertTrue(np.any(row['storage_upper_m3'] > row['storage_lower_m3']))
+                    if env.data.dates[step].year != env.data.dates[step+1].year:
+                        intermediate_year_end_errors.append(float(np.abs(env.storage-initial).max()))
+            np.testing.assert_allclose(env.storage, initial, rtol=0., atol=1e-3)
+            np.testing.assert_array_equal(env.last_transition['controls'], np.zeros(5))
+            self.assertEqual(len(intermediate_year_end_errors), 4)
+            self.assertTrue(all(error > 1. for error in intermediate_year_end_errors))
+            env.reset()
+            np.testing.assert_array_equal(env.storage, initial)
+
+    def test_terminal_requirement_also_applies_without_daily_limits(self):
+        from harl.envs.cascade_reservoir.episodes import episode_environment
+        physical = yaml.safe_load((ROOT/'harl/configs/envs_cfgs/cascade_reservoir.yaml').read_text())
+        physical['use_daily_level_limits'] = False
+        data = CascadeData(ROOT/'data/cascade_reservoir_new', physical)
+        env = episode_environment(data, physical, [1965], days=5)
+        for _ in range(5):
+            env.step(np.full(5, 99))
+        np.testing.assert_allclose(env.storage, env.initial_storage, rtol=0., atol=1e-3)
+        np.testing.assert_array_equal(env.last_transition['storage_lower_m3'], env.initial_storage)
+        np.testing.assert_array_equal(env.last_transition['storage_upper_m3'], env.initial_storage)
+
     def check_day(self, condition, reason, context):
         if not condition:
             self.fail(json.dumps(dict(context, status="FAIL", cause=reason), sort_keys=True))

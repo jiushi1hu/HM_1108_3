@@ -146,6 +146,10 @@ def compute_counterfactual_credit(physics, operation_reward, critic, value_norma
     if (span <= 0.).any() or (caps <= 0.).any():
         raise ValueError('Storage spans and release capacities must be positive')
     rows = time*lanes
+    storage_constraints = context.get('storage_constraints')
+    if storage_constraints is not None:
+        storage_constraints = _finite_array(storage_constraints,
+            (time, lanes, 6, 6), 'storage_constraints').reshape(-1, 6, 6)
     total = rows*agents*bins
     q_flat = np.empty(total, dtype=np.float64)
     predict = getattr(critic, 'get_values', critic)
@@ -157,8 +161,10 @@ def compute_counterfactual_credit(physics, operation_reward, critic, value_norma
         command = indices % bins
         normalized = actions[row].astype(np.float64)/(bins-1)
         normalized[np.arange(len(indices)), actor] = command/(bins-1)
+        options = ({} if storage_constraints is None else
+                   dict(storage_constraints=storage_constraints[row]))
         dispatch = batched_transition(physics, values['storage_start'][row], values['external'][row],
-            normalized, values['storage_lower'][row], values['storage_upper'][row])
+            normalized, values['storage_lower'][row], values['storage_upper'][row], **options)
         q = system_rewards_from_dispatch(operation_reward, dispatch)
         continuing = masks[row] > 0.
         if gamma > 0. and continuing.any():

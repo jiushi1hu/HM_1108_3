@@ -19,7 +19,8 @@ from test_xld_dispatch_diagnostics import synthetic_dispatch
 
 
 class BatchedPhysicsTest(unittest.TestCase):
-    def assert_scalar_equivalent(self, physics, storage, external, actions, lower=None, upper=None):
+    def assert_scalar_equivalent(self, physics, storage, external, actions, lower=None, upper=None,
+                                 constraints=None):
         storage, external, actions = [np.asarray(value, dtype=np.float64)
                                       for value in (storage, external, actions)]
         copies = [value.copy() for value in (storage, external, actions)]
@@ -30,12 +31,15 @@ class BatchedPhysicsTest(unittest.TestCase):
             lower.setflags(write=False)
             upper.setflags(write=False)
         rng = np.random.get_state()
-        actual = batched_transition(physics, storage, external, actions, lower, upper)
+        options = {} if constraints is None else dict(storage_constraints=constraints)
+        actual = batched_transition(physics, storage, external, actions, lower, upper, **options)
         expected = []
         for i in range(len(storage)):
             bounds = {} if lower is None else dict(
                 storage_lower=lower if lower.ndim == 1 else lower[i],
                 storage_upper=upper if upper.ndim == 1 else upper[i])
+            if constraints is not None:
+                bounds['storage_constraints'] = constraints if constraints.ndim == 2 else constraints[i]
             expected.append(physics.transition(storage[i], external[i], actions[i], **bounds))
         self.assertEqual(set(actual), set(expected[0]))
         for name in actual:
@@ -71,7 +75,7 @@ class BatchedPhysicsTest(unittest.TestCase):
                           for name in ('storage_start', 'external', 'storage_lower_m3', 'storage_upper_m3')]
                 with self.subTest(head=head_model, date=row['date']):
                     self.assert_scalar_equivalent(env.physics, arrays[0], arrays[1], candidates,
-                                                  arrays[2], arrays[3])
+                                                  arrays[2], arrays[3], row.get('storage_constraints'))
 
     def test_forced_intervals_and_downstream_control_changes(self):
         for head_model in ('fixed', 'storage_sensitivity'):

@@ -37,11 +37,12 @@ def xld_dispatch_paths(episode_log, seeds, enabled=False):
     return {seed:path.with_name(path.stem+'_seed'+str(seed)+'_xld_dispatch.csv') for seed in seeds}
 
 
-def plot_output_paths(episode_log):
-    """Derived figure paths are unique to the requested experiment log."""
-    if episode_log is None:
+def plot_output_paths(episode_log=None, plot_output=None):
+    """Use an explicit figure stem, or retain the log-derived figure names."""
+    stem = plot_output if plot_output is not None else episode_log
+    if stem is None:
         return {}
-    path=Path(episode_log)
+    path=Path(stem)
     return dict(training=path.with_name(path.stem+'_training.png'),
                 evaluator=path.with_name(path.stem+'_evaluator_return.png'),
                 violations=path.with_name(path.stem+'_violation_rates.png'))
@@ -168,11 +169,15 @@ def run_parallel_experiment(data,physical,config,args,*,runner_cls=CascadeReserv
     trajectory_paths=trajectory_diagnostics_paths(args.episode_log,config['experiment']['seeds'],trajectory_enabled)
     checkpoint_dirs=checkpoint_directories(args.episode_log,config['experiment']['seeds'],checkpoints_enabled)
     credit_paths=counterfactual_credit_paths(args.episode_log,config['experiment']['seeds'],credit_mode=='counterfactual')
-    figure_paths={} if args.no_plot else plot_output_paths(args.episode_log)
+    figure_paths={} if args.no_plot else plot_output_paths(
+        args.episode_log, getattr(args, 'plot_output', None))
     periodic_windows=select_periodic_windows(data)
-    for path in (([] if args.episode_log is None else [args.episode_log])+
-                 list(daily_paths.values())+list(xld_paths.values())+list(figure_paths.values())+
-                 list(trajectory_paths.values())+list(checkpoint_dirs.values())+list(credit_paths.values())):
+    output_paths=(([] if args.episode_log is None else [args.episode_log])+
+                  list(daily_paths.values())+list(xld_paths.values())+list(figure_paths.values())+
+                  list(trajectory_paths.values())+list(checkpoint_dirs.values())+list(credit_paths.values()))
+    if len({path.resolve() for path in output_paths}) != len(output_paths):
+        raise ValueError('Experiment output paths must be distinct')
+    for path in output_paths:
         if path.exists():
             raise ValueError('Output file already exists: '+str(path))
     evaluation_years=list(data.evaluation_years)
@@ -285,10 +290,14 @@ def run_parallel_experiment(data,physical,config,args,*,runner_cls=CascadeReserv
                 if xld_enabled else 0,
             columns=list(XLD_DIAGNOSTIC_FIELDS),
             counterfactual='same current state and action-date bounds; all other reservoir actions held fixed',
-            interpretation='same-day physical attainability; no future inflows, action replacement or claim of long-term optimality',
+            interpretation='same-day attainability under the executed terminal reachability constraints; '
+                'no action replacement or claim of long-term optimality',
             data_precision='10 significant digits in CSV; internal calculations and JSON summaries retain full precision'),
         calendar='fixed consecutive daily steps with leap days retained; storage carries across source-year boundaries',
-        release_bounds_scope='current_transition',
+        release_bounds_scope=('episode_terminal_reachability' if physical.get(
+            'terminal_storage_equal_initial', False) else 'current_transition'),
+        terminal_storage_requirement=('each reservoir equals its episode-start storage after the final decision only'
+            if physical.get('terminal_storage_equal_initial', False) else 'disabled'),
         daily_bound_alignment='action_date=t constrains the state after action t; no additional date shift',
         step_logging=dict(enabled=args.episode_log is not None,
             format='compact_csv_v1',
@@ -417,5 +426,6 @@ def run_parallel_experiment(data,physical,config,args,*,runner_cls=CascadeReserv
                 input=json.dumps(payload,allow_nan=False),text=True,check=True)
     print('Finished multi-year experiment. Training resume is not implemented; '
           'evaluation checkpoints are saved when --save-checkpoints is enabled. '
-          'JSONL summaries and per-seed daily metrics CSVs are saved with --episode-log.',flush=True)
+          'JSONL summaries and per-seed daily metrics CSVs are saved with --episode-log. '
+          'Figures are saved with --plot-output or --episode-log when plotting is enabled.',flush=True)
     return payload

@@ -33,7 +33,8 @@ def add_comparison_arguments(parser):
     parser.epilog = ('The same YAML and overrides apply to both algorithms. '
         '--episode-log names a comparison stem: separate _happo/_mappo JSONL, '
         'CSV and checkpoint paths are derived from it. Without that option, '
-        'plot windows use in-memory results and no run files are saved.')
+        'plot windows use in-memory results. --plot-output saves only the '
+        'three comparison figures when --episode-log is omitted.')
 
 
 def algorithm_log_path(base, algorithm):
@@ -71,7 +72,7 @@ def comparison_preflight(args, config):
         paths.extend(checkpoint_directories(log, seeds, args.save_checkpoints).values())
         paths.extend(counterfactual_credit_paths(log, seeds, counterfactual).values())
     if not args.no_plot:
-        paths.extend(plot_output_paths(args.episode_log).values())
+        paths.extend(plot_output_paths(args.episode_log, getattr(args, 'plot_output', None)).values())
     resolved = [path.resolve() for path in paths]
     if len(set(resolved)) != len(resolved):
         raise ValueError('Comparison output paths must be distinct')
@@ -91,6 +92,7 @@ def run_comparison(data, physical, config, args):
         options = copy.copy(args)
         options.episode_log = algorithm_log_path(args.episode_log, algorithm)
         options.no_plot = True  # Only the joint figures are drawn at the end.
+        options.plot_output = None
         print('Running {} with the shared cascade configuration ...'.format(
               algorithm.upper()), flush=True)
         effective_config = copy.deepcopy(config)
@@ -107,7 +109,7 @@ def run_comparison(data, physical, config, args):
     validate_comparison(comparison)
     if not args.no_plot:
         command = [args.plot_python, str(ROOT/'examples/plot_cascade_compare.py')]
-        figures = plot_output_paths(args.episode_log)
+        figures = plot_output_paths(args.episode_log, getattr(args, 'plot_output', None))
         if figures:
             command.extend(['--output', str(figures['training']),
                 '--evaluator-output', str(figures['evaluator']),

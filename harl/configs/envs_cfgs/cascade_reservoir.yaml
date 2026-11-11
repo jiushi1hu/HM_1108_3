@@ -12,6 +12,9 @@ water_density_kg_m3: 1000.0
 gravity_m_s2: 9.81
 timestep_seconds: 86400.0
 release_mapping: quadratic
+# Match each reservoir's episode-start storage only after the final decision.
+# Backward feasibility uses the known episode inflows and daily envelopes.
+terminal_storage_equal_initial: true
 # Supplied permitted levels for the state reached after each action date.
 use_daily_level_limits: true
 # Reference guaranteed-output and ecological-flow thresholds from paper Table A.1.

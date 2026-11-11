@@ -5,6 +5,10 @@ PKU-MARL HARL. HAPPO uses five independent categorical actors; MAPPO uses one
 identity-conditioned actor shared by all five reservoir agents. Both use one
 centralized critic.
 The environment resolves releases upstream to downstream with zero travel delay.
+Each reservoir must return to its own episode-start storage after the final
+decision of the five-year episode. No equality target is imposed at intervening
+year boundaries. A backward feasibility calculation using the known episode
+inflows and daily envelopes keeps that final target reachable.
 HAPPO learns one shared team advantage from `0.5 * sum(local rewards) +
 0.5 * global generation reward`, counting the global term once. MAPPO retains
 its individual 50/50 local/global advantages. The legacy team reward remains
@@ -19,10 +23,11 @@ methods rather than isolating an algorithm-only effect.
 ## Run HAPPO and MAPPO with three comparison figures
 
 ```bash
-cd /Users/hujingxin/Documents/Code_python/HARL-main
+cd /Users/hujingxin/Documents/Code_python/HM_1108
 
 PYTHONDONTWRITEBYTECODE=1 /opt/anaconda3/envs/harl/bin/python -B examples/train_cascade_compare.py \
   --episodes 300 --seeds 1 2 3 --gamma 0.995 --eval-interval 1 --diagnostics \
+  --plot-output runs/terminal_storage_seeds123 \
   --plot-python /Library/Frameworks/Python.framework/Versions/3.9/bin/python3
 ```
 
@@ -32,8 +37,11 @@ training return/generation, fixed-scenario evaluator return, and ecological-flow
 guaranteed-output violation rates. Every metric panel contains separate HAPPO
 (solid red) and MAPPO (dashed blue) seed means and sample-standard-deviation bands. The seed
 sets are never averaged across algorithms. The command above keeps results in
-memory and creates no JSONL, CSV or checkpoint outputs; figures can be saved
-with the Matplotlib window's Save button.
+memory and creates no JSONL, CSV or checkpoint outputs. It saves only
+`runs/terminal_storage_seeds123_training.png`,
+`runs/terminal_storage_seeds123_evaluator_return.png`, and
+`runs/terminal_storage_seeds123_violation_rates.png`, then displays the figures.
+Use a fresh `--plot-output` stem for each run; existing figures are not overwritten.
 
 For an independent run, add `--algorithms happo` or `--algorithms mappo` to that
 command. `examples/train_cascade.py` remains the original HAPPO-only entry point.
@@ -739,8 +747,9 @@ bounds, rather than changes to the physical model.
 A feasible same-day alternative establishes that the guarantee could be met
 from that state. It does not establish the best five-year strategy: releasing
 more water changes later storage, while an unfavorable current state may itself
-have resulted from earlier actions. No future inflows or deadline targets are
-used. Diagnostics never replace policy actions, alter rewards, update gradients,
+have resulted from earlier actions. Alternative commands retain the same
+terminal-reachable constraints as the executed transition. Diagnostics never
+replace policy actions, alter rewards, update gradients,
 or change the executed trajectory. Unexpected counterfactual failures raise a
 diagnostic error instead of being counted as failures of the executed policy.
 
@@ -749,8 +758,8 @@ diagnostic error instead of being counted as failures of the executed policy.
 Raw data and source notes live in `data/cascade_reservoir_new/`. Hard constraints
 cover water balance, global operating storage, daily CSV bounds, outlet capacity
 and compatibility with downstream storage and outlet limits in the same transition.
-Release intervals use current storage, the current day's external inflows and
-the bounds on the resulting state.
+Release intervals also preserve reachability of each reservoir's episode-start
+storage at the end of the full episode.
 
 `five_reservoir_happo_input_bounds_1965_2024.csv` is the authoritative daily limit
 table. A row with `action_date=t` already gives the allowed level and storage
@@ -759,12 +768,17 @@ row directly. There is no additional shift to the following date. At source-year
 joins, the previous executed row constrains current storage and the newly selected
 action-date row constrains the next storage.
 
-There is no remaining-horizon reachability calculation, future-inflow lookup,
-refill target, or return-to-initial-storage condition. Some supplied daily ranges
-have equal lower and upper limits; those rows still require that single level.
-The environment raises an error when a current transition is infeasible instead
-of silently changing the storage balance. Without an end-storage target, episode
-generation can include depletion of initially stored water, which remains reported.
+`terminal_storage_equal_initial: true` enables the default hard terminal equality.
+The physical feasibility filter works backward from that target through the
+episode's known inflows, outlet capacities and original daily storage envelopes.
+It tracks coupled cumulative-storage bounds, then maps commands into intervals
+that retain at least one feasible continuation. This uses scenario hydrology
+beyond the current day; future inflows are not added to policy observations.
+Only the last decision targets initial storage, including for the constructed
+held-out year sequence. Earlier year boundaries carry storage normally.
+Final storage is computed from releases and water balance, never overwritten;
+equality is checked within floating-point water-accounting tolerance. An
+incompatible target or physically infeasible episode raises an explicit error.
 
 The default `storage_sensitivity` head model uses mean starting/ending forebay
 elevation, constant efficiency 0.9, and supplied slope/offset assumptions.

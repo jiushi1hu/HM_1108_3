@@ -62,6 +62,64 @@ def assert_learning_provenance(case, record, algorithm, common_rows=True):
 
 
 class ComparisonDispatchTest(unittest.TestCase):
+    def test_plot_only_cli_routes_three_figures_without_run_files(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            directory = Path(directory)
+            stem = directory/'cycle_seeds123'
+            stack.enter_context(mock.patch.object(cli, 'CascadeData', return_value=mock.sentinel.data))
+            helper = stack.enter_context(mock.patch.object(compare, 'run_parallel_experiment',
+                side_effect=lambda *args, **kwargs: {'algorithm': kwargs['algorithm_name']}))
+            stack.enter_context(mock.patch.object(compare, 'validate_comparison'))
+            plots = stack.enter_context(mock.patch.object(compare.subprocess, 'run'))
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            compare.main(['--seeds', '1', '2', '3', '--plot-output', str(stem)])
+            self.assertEqual(helper.call_count, 2)
+            for call in helper.call_args_list:
+                self.assertEqual(call.args[2]['experiment']['seeds'], [1, 2, 3])
+                options = call.args[3]
+                self.assertIsNone(options.episode_log)
+                self.assertIsNone(options.plot_output)
+                self.assertTrue(options.no_plot)
+                self.assertFalse(options.save_checkpoints)
+                self.assertFalse(options.trajectory_diagnostics)
+            self.assertEqual(plots.call_count, 2)  # Backend check, then joint plotting.
+            command = plots.call_args.args[0]
+            self.assertEqual(Path(command[1]).name, 'plot_cascade_compare.py')
+            self.assertEqual(command[2:], [
+                '--output', str(directory/'cycle_seeds123_training.png'),
+                '--evaluator-output', str(directory/'cycle_seeds123_evaluator_return.png'),
+                '--violations-output', str(directory/'cycle_seeds123_violation_rates.png')])
+            self.assertEqual(list(directory.iterdir()), [])
+
+    def test_plot_output_collision_is_rejected_before_data_or_training(self):
+        for entry_point in ('happo', 'comparison'):
+            with self.subTest(entry_point=entry_point), tempfile.TemporaryDirectory() as directory:
+                stem = Path(directory)/'cycle'
+                collision = stem.with_name('cycle_violation_rates.png')
+                collision.write_text('existing figure', encoding='utf-8')
+                with mock.patch.object(cli, 'CascadeData') as data_factory, \
+                        mock.patch.object(compare, 'run_parallel_experiment') as helper, \
+                        redirect_stderr(io.StringIO()):
+                    with self.assertRaises(SystemExit) as raised:
+                        if entry_point == 'happo':
+                            cli.main(['--plot-output', str(stem)], experiment_runner=helper)
+                        else:
+                            compare.main(['--plot-output', str(stem)])
+                    self.assertEqual(raised.exception.code, 2)
+                    data_factory.assert_not_called()
+                    helper.assert_not_called()
+                self.assertEqual(list(Path(directory).iterdir()), [collision])
+                self.assertEqual(collision.read_text(encoding='utf-8'), 'existing figure')
+
+    def test_plot_output_requires_plotting(self):
+        with mock.patch.object(cli, 'CascadeData') as data_factory, \
+                redirect_stderr(io.StringIO()) as errors:
+            with self.assertRaises(SystemExit) as raised:
+                cli.main(['--plot-output', 'cycle', '--no-plot'])
+            self.assertEqual(raised.exception.code, 2)
+            self.assertIn('--plot-output requires plotting', errors.getvalue())
+            data_factory.assert_not_called()
+
     def test_cli_defaults_to_both_algorithms_and_supports_single_selection(self):
         selections = [([], ['happo', 'mappo']),
                       (['--algorithms', 'mappo'], ['mappo']),

@@ -31,7 +31,8 @@ def brute_grid(env, row, reservoir):
         candidate = actions.copy()
         candidate[reservoir] = index/(env.action_bins-1)
         results.append(env.physics.transition(row['storage_start'], row['external'],
-            candidate, row['storage_lower_m3'], row['storage_upper_m3']))
+            candidate, row['storage_lower_m3'], row['storage_upper_m3'],
+            storage_constraints=row.get('storage_constraints')))
     return results
 
 
@@ -71,7 +72,7 @@ class DispatchFeasibilityTest(unittest.TestCase):
         config = yaml.safe_load((ROOT/'harl/configs/envs_cfgs/cascade_reservoir.yaml').read_text())
         experiment = yaml.safe_load((ROOT/'harl/configs/algos_cfgs/happo_cascade.yaml').read_text())['experiment']
         for head in ('fixed', 'storage_sensitivity'):
-            physical = dict(config, head_model=head)
+            physical = dict(config, head_model=head, terminal_storage_equal_initial=False)
             data = CascadeData(ROOT/'data/cascade_reservoir_new', physical, experiment)
             env = episode_environment(data, physical, [1965], days=4, action_bins=21)
             # Diagnostic-only thresholds above actual capacities make every
@@ -92,6 +93,39 @@ class DispatchFeasibilityTest(unittest.TestCase):
                         self.assertEqual(record[term+'_meeting_grid_action_count'], 0)
                     self.assertEqual(record['ecological_flow_classification'], 'same_state_capacity_limit')
                 json.dumps(records, allow_nan=False)
+
+    def test_terminal_reachability_is_preserved_by_diagnostic_witnesses(self):
+        physical = yaml.safe_load((ROOT/'harl/configs/envs_cfgs/cascade_reservoir.yaml').read_text())
+        physical.update(head_model='fixed', terminal_storage_equal_initial=True)
+        data = CascadeData(ROOT/'data/cascade_reservoir_new', physical)
+        env = episode_environment(data, physical, [1965], days=4, action_bins=11)
+        initial = env.storage.copy()
+        # Large diagnostic requirements exercise every alternative-search path;
+        # they do not change the terminal or physical constraints.
+        env.operation_reward.requirements = SimpleNamespace(
+            guaranteed_output_mw=np.full(5, 1e6), ecological_flow_m3s=np.full(5, 1e6))
+        xld = XLDDispatchDiagnostics(env, seed=1, evaluation_round=0,
+            window_id='terminal_reachability', phase='training_evaluation')
+        for day in range(4):
+            env.step((np.arange(5)*3+day*7) % env.action_bins)
+            row = env.last_transition
+            self.assertIn('storage_constraints', row)
+            records = analyze_transition(env, row)
+            xld_record = xld.update(row, day+1)
+            for i, record in enumerate(records):
+                expected = brute_grid(env, row, i)
+                np.testing.assert_allclose(record['guaranteed_output_best_grid_actual'],
+                    max(float(candidate['power'][i]) for candidate in expected), rtol=1e-10, atol=1e-7)
+                for candidate in expected:
+                    prefix = np.r_[0., np.cumsum(candidate['storage_end'])]
+                    self.assertTrue(np.all(prefix[:, None]-prefix[None, :] <=
+                                           row['storage_constraints']+1e-3))
+                    if day == 3:
+                        np.testing.assert_allclose(candidate['storage_end'], initial, rtol=0., atol=1e-3)
+            self.assertEqual(xld_record['classification'], records[2]['guaranteed_output_classification'])
+            self.assertAlmostEqual(xld_record['best_grid_power_mw'],
+                records[2]['guaranteed_output_best_grid_actual'], places=7)
+        np.testing.assert_allclose(env.storage, initial, rtol=0., atol=1e-3)
 
     def test_xld_equivalence_for_each_classification(self):
         cases = [dict(guarantee=10.), dict(guarantee=100.),
@@ -192,7 +226,8 @@ class DispatchFeasibilityTest(unittest.TestCase):
             commands = normalized.copy()
             commands[2] = action
             dense.append(env.physics.transition(row['storage_start'], row['external'],
-                commands, row['storage_lower_m3'], row['storage_upper_m3'])['power'][2])
+                commands, row['storage_lower_m3'], row['storage_upper_m3'],
+                storage_constraints=row.get('storage_constraints'))['power'][2])
         self.assertGreaterEqual(record['guaranteed_output_continuous_max_actual']+1e-7, max(dense))
         self.assertLess(record['guaranteed_output_continuous_max_actual']-max(dense), .01)
 

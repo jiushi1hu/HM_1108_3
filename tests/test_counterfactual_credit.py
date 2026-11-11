@@ -25,7 +25,9 @@ from harl.envs.cascade_reservoir.reward import OperationReward, reward_settings
 def value_function(states):
     """A known state-dependent frozen critic; output is normalized units."""
     states = np.asarray(states, dtype=np.float32)
-    return (states[:, :5] @ np.arange(1., 6., dtype=np.float32)+
+    # Explicit row reductions keep this analytical reference independent of
+    # BLAS's batch-size-dependent float32 matrix-multiply accumulation order.
+    return ((states[:, :5]*np.arange(1., 6., dtype=np.float32)).sum(axis=1)+
             3.*states[:, 10:15].sum(axis=1)+states[:, -1]).reshape(-1, 1)
 
 
@@ -55,6 +57,9 @@ class CounterfactualCreditTest(unittest.TestCase):
                 for key, source in dict(storage_start='storage_start', external='external',
                     actions='sampled_actions', storage_lower='storage_lower_m3',
                     storage_upper='storage_upper_m3', controls='controls').items()}
+            if 'storage_constraints' in records[0][0]:
+                context['storage_constraints'] = np.asarray([
+                    [row['storage_constraints'] for row in day] for day in records])
             probabilities = np.stack([np.roll(np.arange(1.,6.), i) for i in range(5)])
             probabilities = np.broadcast_to(probabilities/15., (3,2,5,5)).copy()
             masks = np.ones((3,2,1)); masks[-1] = 0.
@@ -83,7 +88,8 @@ class CounterfactualCreditTest(unittest.TestCase):
                                 actions = row['sampled_actions'].astype(float)/4.
                                 actions[actor] = command/4.
                                 transition = fixture['env'].physics.transition(row['storage_start'],
-                                    row['external'], actions, row['storage_lower_m3'], row['storage_upper_m3'])
+                                    row['external'], actions, row['storage_lower_m3'], row['storage_upper_m3'],
+                                    storage_constraints=row.get('storage_constraints'))
                                 fixture['env'].operation_reward.apply(transition)
                                 value = 0.
                                 if step != 2:

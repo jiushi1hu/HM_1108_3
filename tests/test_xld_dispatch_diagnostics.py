@@ -108,7 +108,7 @@ def brute_grid(env, transition):
         candidate[2] = action/(env.action_bins-1)
         results.append(env.physics.transition(transition['storage_start'],
             transition['external'], candidate, transition['storage_lower_m3'],
-            transition['storage_upper_m3']))
+            transition['storage_upper_m3'], storage_constraints=transition.get('storage_constraints')))
     return results
 
 
@@ -120,7 +120,8 @@ class XLDDispatchDiagnosticTest(unittest.TestCase):
         cls.historical = {}
         for head_model in ('fixed', 'storage_sensitivity'):
             config = dict(cls.physical, head_model=head_model,
-                          guaranteed_output_scale=.4, ecological_flow_scale=.4)
+                          guaranteed_output_scale=.4, ecological_flow_scale=.4,
+                          terminal_storage_equal_initial=False)
             cls.historical[head_model] = (CascadeData(ROOT/'data/cascade_reservoir_new',
                                                      config, cls.experiment), config)
 

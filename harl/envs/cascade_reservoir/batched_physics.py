@@ -8,7 +8,8 @@ generation formulas and numerical tolerances match the scalar implementation.
 import numpy as np
 
 from harl.envs.cascade_reservoir.data_loader import IDS
-from harl.envs.cascade_reservoir.reservoir_physics import InfeasibleCascade
+from harl.envs.cascade_reservoir.reservoir_physics import (
+    InfeasibleCascade, constrained_releases, _storage_box_constraints)
 
 
 def _matrix(value, name, shape=None):
@@ -55,7 +56,7 @@ def _forebay_levels(physics, storage):
 
 
 def batched_transition(physics, storage, external, actions,
-                       storage_lower=None, storage_upper=None):
+                       storage_lower=None, storage_upper=None, storage_constraints=None):
     """Evaluate normalized-command transitions with input shape ``(batch, 5)``.
 
     Optional end-state bounds have that shape or are broadcast five-vectors.
@@ -88,7 +89,7 @@ def batched_transition(physics, storage, external, actions,
     inflow, release, low, high = [np.empty(shape, dtype=np.float64) for _ in range(4)]
     controls = np.ones(shape, dtype=np.float32)
     executed_actions = actions.copy()
-    for i in range(len(IDS)):
+    for i in range(len(IDS)) if storage_constraints is None else ():
         inflow[:, i] = external[:, i]+(release[:, i-1] if i else 0.)
         low[:, i] = np.maximum(lower[:, i], inflow[:, i]+(storage[:, i]-storage_max[:, i])/dt)
         high[:, i] = np.minimum(upper[:, i], inflow[:, i]+(storage[:, i]-storage_min[:, i])/dt)
@@ -101,6 +102,13 @@ def batched_transition(physics, storage, external, actions,
         release[:, i] = np.where(forced, midpoint,
             low[:, i]+executed_actions[:, i]**2*(high[:, i]-low[:, i]))
 
+    if storage_constraints is not None:
+        # Intersect arbitrary caller-supplied boxes as well as the reachable
+        # zone, just as scalar transition does. Each adjacent prefix difference
+        # is one reservoir's storage.
+        combined = np.minimum(storage_constraints, _storage_box_constraints(storage_min, storage_max))
+        inflow, release, low, high, controls, executed_actions = constrained_releases(
+            data, dt, storage, external, actions, combined)
     next_storage = storage+(inflow-release)*dt
     residual = next_storage-storage-(inflow-release)*dt
     tolerance = np.maximum(1., 1e-10*np.abs(storage))
@@ -145,4 +153,6 @@ def batched_transition(physics, storage, external, actions,
         reward=energy.sum(axis=1)/physics.reference_energy, system_residual=system_residual)
     if storage_lower is not None:
         result.update(storage_lower_m3=storage_min.copy(), storage_upper_m3=storage_max.copy())
+    if storage_constraints is not None:
+        result['storage_constraints'] = np.broadcast_to(storage_constraints, shape[:-1]+(6, 6)).copy()
     return result

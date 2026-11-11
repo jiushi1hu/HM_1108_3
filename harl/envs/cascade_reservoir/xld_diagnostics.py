@@ -1,7 +1,8 @@
 """Read-only, same-day Xiluodu dispatch diagnostics.
 
 Counterfactuals keep the actual starting state, current external inflows, daily
-storage bounds and the other four actors' chosen actions fixed. They do not
+storage bounds, active terminal reachability constraints and the other four
+actors' chosen actions fixed. They do not
 assess future water value or declare that a same-day alternative is a better
 multi-day policy. No counterfactual is executed in the real environment.
 """
@@ -259,11 +260,13 @@ class XLDDispatchDiagnostics:
     def _replay(self, row, normalized_xld, expected_release, expected_power):
         actions = self._chosen_actions(row)
         actions[_XLD] = normalized_xld
+        constraints = row.get('storage_constraints')
+        options = {} if constraints is None else dict(storage_constraints=constraints)
         replay = self.physics.transition(
             self._vector(row['storage_start'], 'storage_start'),
             self._vector(row['external'], 'external'), actions,
             self._vector(row['storage_lower_m3'], 'storage_lower_m3'),
-            self._vector(row['storage_upper_m3'], 'storage_upper_m3'))
+            self._vector(row['storage_upper_m3'], 'storage_upper_m3'), **options)
         if (not np.isclose(replay['release'][_XLD], expected_release, rtol=1e-10, atol=1e-7) or
                 not np.isclose(replay['power'][_XLD], expected_power, rtol=1e-10, atol=1e-7)):
             raise XLDDispatchDiagnosticError('Local candidate disagrees with the complete cascade replay')

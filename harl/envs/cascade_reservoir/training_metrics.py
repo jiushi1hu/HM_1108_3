@@ -165,7 +165,8 @@ def episode_record(env, rewards, energy_by_reservoir, seed, episode, gamma,
         reward_aggregation=REWARD_AGGREGATION, reward_definition=REWARD_DEFINITION,
         **env.observation_metadata(),
         reward_penalties=dict(env.reward_settings), reference_energy_MWh=env.physics.reference_energy,
-        release_bounds_scope='current_transition')
+        release_bounds_scope=('episode_terminal_reachability' if getattr(
+            env, 'terminal_storage_equal_initial', False) else 'current_transition'))
 
 
 def log_episode(record, stream=None):
