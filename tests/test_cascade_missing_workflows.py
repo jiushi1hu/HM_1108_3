@@ -2,6 +2,7 @@
 import copy
 import csv
 from contextlib import redirect_stdout
+from datetime import date
 import io
 import os
 from pathlib import Path
@@ -297,6 +298,171 @@ class CriticValueNormUpdateTest(unittest.TestCase):
         torch.testing.assert_close(plain.critic_optimizer.state_dict(), once.critic_optimizer.state_dict(),
                                    rtol=0., atol=0.)
         torch.testing.assert_close(plain_info, once_info, rtol=0., atol=0.)
+
+
+class InflowForecastObservationTest(unittest.TestCase):
+    """Date-keyed supplied forecasts change actor information only."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.physical = yaml.safe_load((ROOT/'harl/configs/envs_cfgs/cascade_reservoir.yaml').read_text())
+        cls.args = yaml.safe_load((ROOT/'harl/configs/algos_cfgs/happo_cascade.yaml').read_text())
+        cls.data = CascadeData(ROOT/'data/cascade_reservoir_new', cls.physical, cls.args['experiment'])
+        cls.columns = (
+            'WDD_external_inflow_forecast_next7d_mean_m3s',
+            'BHT_interval_inflow_forecast_next7d_mean_m3s',
+            'XLD_interval_inflow_forecast_next7d_mean_m3s',
+            'XJB_interval_inflow_forecast_next7d_mean_m3s',
+            'THR_interval_inflow_forecast_next7d_mean_m3s',
+        )
+        with (ROOT/'data/cascade_reservoir_new/five_reservoir_next7d_mean_inflow_forecast_1965_2024.csv').open(
+                encoding='utf-8-sig', newline='') as stream:
+            cls.by_date = {row['date']: [float(row[column]) for column in cls.columns]
+                           for row in csv.DictReader(stream)}
+
+    @staticmethod
+    def write_forecast(path, columns, rows):
+        with path.open('w', encoding='utf-8-sig', newline='') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(columns)
+            writer.writerows(rows)
+
+    def test_forecast_loader_maps_column_names_and_dates_instead_of_positions(self):
+        from harl.envs.cascade_reservoir.data_loader import (
+            FORECAST_COLUMNS, load_inflow_forecast)
+        self.assertEqual(FORECAST_COLUMNS, self.columns)
+        dates = (date(1968, 12, 31), date(1969, 1, 1))
+        # Deliberately place the date in the middle and reverse station order
+        # and row chronology. Values identify each station independently.
+        headers = (self.columns[4], self.columns[2], 'date', self.columns[0],
+                   self.columns[3], self.columns[1])
+        records = [dict(date='1968-12-31', **dict(zip(self.columns, [1., 2., 3., 4., 5.]))),
+                   dict(date='1969-01-01', **dict(zip(self.columns, [11., 12., 13., 14., 15.])))]
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'forecast.csv'
+            self.write_forecast(path, headers, [[row[column] for column in headers]
+                                                for row in reversed(records)])
+            forecast = load_inflow_forecast(path, dates)
+        np.testing.assert_array_equal(forecast, [[1., 2., 3., 4., 5.], [11., 12., 13., 14., 15.]])
+        self.assertEqual(forecast.dtype, np.float64)
+        self.assertFalse(forecast.flags.writeable)
+
+    def test_forecast_loader_rejects_missing_ambiguous_or_invalid_inputs(self):
+        from harl.envs.cascade_reservoir.data_loader import load_inflow_forecast
+        dates = (date(1965, 1, 1), date(1965, 1, 2))
+        headers = ('date',)+self.columns
+        rows = [['1965-01-01', 1., 2., 3., 4., 5.],
+                ['1965-01-02', 11., 12., 13., 14., 15.]]
+        cases = [
+            ('missing column', headers[:-1], [row[:-1] for row in rows]),
+            ('duplicate column', headers+(self.columns[0],), [row+[1.] for row in rows]),
+            ('unknown station column', headers[:-1]+('TGR_interval_inflow_forecast_next7d_mean_m3s',), rows),
+            ('duplicate date', headers, rows+[rows[0]]),
+            ('missing date', headers, rows[:1]),
+            ('outside date', headers, rows[:1]+[['1965-01-03']+rows[1][1:]]),
+            ('invalid date', headers, [['1965-02-30']+rows[0][1:]]+rows[1:]),
+        ]
+        for value in ('', 'nan', 'inf', '-1', 'not-a-number'):
+            changed = copy.deepcopy(rows)
+            changed[0][3] = value
+            cases.append(('invalid value '+value, headers, changed))
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary)/'forecast.csv'
+            for name, columns, values in cases:
+                with self.subTest(case=name):
+                    self.write_forecast(path, columns, values)
+                    with self.assertRaises(ValueError):
+                        load_inflow_forecast(path, dates)
+
+    def test_actor_forecast_is_last_and_uses_training_actual_inflow_statistics(self):
+        from harl.envs.cascade_reservoir.episodes import episode_environment
+        train = self.data.external[np.isin(self.data.years, self.data.training_years)]
+        np.testing.assert_array_equal(self.data.flow_mean, train.mean(axis=0))
+        np.testing.assert_array_equal(self.data.flow_std, np.maximum(train.std(axis=0), 1.))
+        self.assertFalse(self.data.inflow_forecast.flags.writeable)
+        for daily_limits in (True, False):
+            config = dict(self.physical, use_daily_level_limits=daily_limits)
+            env = episode_environment(self.data, config, [1965], days=4)
+            state, observed = env.state(), env.actor_observations()
+            storage, external, release = state[:5], state[5:10], state[10:15]
+            upper = (env._next_state_storage_bounds(env.index)[1]-self.data.vmin)/(self.data.vmax-self.data.vmin)
+            old_features = []
+            for i in range(5):
+                upstream = (storage[i-1], external[i-1], release[i-1]) if i else (0., 0., 0.)
+                downstream = (storage[i+1], upper[i+1]-storage[i+1]) if i < 4 else (0., 1.)
+                row = [storage[i], external[i], release[i], *upstream, *downstream]
+                if daily_limits:
+                    row.extend(state[start+i] for start in (18, 23, 28, 33))
+                row.extend(state[15:18])
+                old_features.append(row)
+            np.testing.assert_array_equal(observed[:, :-1], np.asarray(old_features, dtype=np.float32))
+            expected = (np.asarray(self.by_date['1965-01-01'])-self.data.flow_mean)/self.data.flow_std
+            np.testing.assert_array_equal(observed[:, -1], expected.astype(np.float32))
+            self.assertEqual(observed.shape, (5, 16 if daily_limits else 12))
+            self.assertEqual(state.shape, (38 if daily_limits else 18,))
+            self.assertEqual(env.observation_features[-1], 'next7d_mean_inflow_forecast_standardized')
+
+    def test_episode_forecasts_keep_source_dates_at_leaps_joins_and_dataset_end(self):
+        from harl.envs.cascade_reservoir.episodes import EpisodeData
+        for years, days in (([1968, 1969], 367), (list(self.data.evaluation_years), 1825), ([2024], 366)):
+            view = EpisodeData(self.data, years, days)
+            expected = np.asarray([self.by_date[day.isoformat()] for day in view.dates])
+            np.testing.assert_array_equal(view.inflow_forecast, expected)
+            self.assertFalse(view.inflow_forecast.flags.writeable)
+            if years[0] == 1968:
+                self.assertEqual(view.dates[59], date(1968, 2, 29))
+                self.assertEqual(view.dates[366], date(1969, 1, 1))
+            elif years[0] == 1998:
+                self.assertEqual(view.dates[729], date(1999, 12, 31))
+                self.assertEqual(view.dates[730], date(1970, 1, 1))
+            # Changing realized forcing must not recompute a forecast from its
+            # next seven rows, including at artificial held-out year joins.
+            changed = copy.copy(self.data)
+            changed.external = np.zeros_like(self.data.external)
+            np.testing.assert_array_equal(EpisodeData(changed, years, days).inflow_forecast, expected)
+
+    def test_forecast_only_changes_neither_critic_state_nor_fixed_command_physics(self):
+        from harl.envs.cascade_reservoir.episodes import episode_environment
+        changed = copy.copy(self.data)
+        changed.inflow_forecast = self.data.inflow_forecast+10000.*np.arange(1., 6.)
+        original = episode_environment(self.data, self.physical, [1965], days=4)
+        altered = episode_environment(changed, self.physical, [1965], days=4)
+        for commands in (np.zeros(5), np.full(5, 99), np.array([3, 11, 45, 70, 90]), np.full(5, 48)):
+            np.testing.assert_array_equal(original.state(), altered.state())
+            np.testing.assert_array_equal(original.actor_observations()[:, :-1],
+                                          altered.actor_observations()[:, :-1])
+            self.assertTrue(np.all(original.actor_observations()[:, -1] != altered.actor_observations()[:, -1]))
+            original.step(commands)
+            altered.step(commands)
+            left, right = original.last_transition, altered.last_transition
+            for field in ('external', 'inflow', 'storage_start', 'storage_end', 'release', 'turbine',
+                          'spill', 'power', 'energy', 'low', 'high', 'controls', 'local_rewards',
+                          'mixed_rewards', 'local_reward_penalties', 'storage_constraints'):
+                np.testing.assert_array_equal(left[field], right[field])
+            for field in ('reward', 'generation_reward', 'reward_penalty', 'global_reward', 'system_reward'):
+                self.assertEqual(left[field], right[field])
+        np.testing.assert_array_equal(original.actor_observations(), np.zeros((5, 16), dtype=np.float32))
+        np.testing.assert_array_equal(altered.actor_observations(), original.actor_observations())
+        np.testing.assert_array_equal(original.state(), np.zeros(38, dtype=np.float32))
+
+    def test_happo_actor_network_and_rollout_buffers_accept_sixteen_features(self):
+        args = copy.deepcopy(self.args)
+        args['train'].update(episode_length=4, n_rollout_threads=1)
+        args['model'].update(hidden_sizes=[8, 8], action_bins=7)
+        args['experiment'].update(episodes=1, seeds=[1])
+        runner = CascadeReservoirRunner(self.data, self.physical, args, 1,
+            periodic_windows=select_periodic_windows(self.data, episode_days=4))
+        self.addCleanup(runner.close)
+        obs = runner.envs[0].actor_observations()
+        for i, actor in enumerate(runner.actor):
+            first_linear = next(layer for layer in actor.actor.modules() if isinstance(layer, torch.nn.Linear))
+            self.assertEqual(first_linear.in_features, 16)
+            self.assertEqual(runner.actor_buffer[i].obs.shape, (5, 1, 16))
+            action = actor.act(obs[i:i+1], deterministic=True)
+            self.assertEqual(tuple(action.shape), (1, 1))
+        first_critic = next(layer for layer in runner.critic.critic.modules() if isinstance(layer, torch.nn.Linear))
+        self.assertEqual(first_critic.in_features, 38)
+        self.assertEqual(runner.critic_buffer.share_obs.shape, (5, 1, 38))
 
 
 class MissingWorkflowIntegrationTest(unittest.TestCase):

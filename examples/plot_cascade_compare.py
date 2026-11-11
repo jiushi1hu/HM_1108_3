@@ -162,6 +162,8 @@ def _validate_architecture(algorithm, run):
     if requested is not None and requested != shared:
         raise ValueError('Actor architecture disagrees with share_param')
     raw_dim = 15 if settings['physical_config'].get('use_daily_level_limits', True) else 11
+    if 'five_reservoir_next7d_mean_inflow_forecast_1965_2024.csv' in run['comparison_context']['data_hashes']:
+        raw_dim += 1
     expected = dict(network_count=1 if shared else 5, optimizer_count=1 if shared else 5,
         raw_observation_dim=raw_dim, network_observation_dim=raw_dim+5 if shared else raw_dim,
         identity_features='one_hot_reservoir_id' if shared else 'implicit_in_separate_actor',

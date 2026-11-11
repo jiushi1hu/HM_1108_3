@@ -14,6 +14,9 @@ DAILY_LEVEL_LIMITS_FILE = "five_reservoir_happo_input_bounds_1965_2024.csv"
 FLOW_COLUMNS = ("WDD_external_inflow_m3s",) + tuple(
     name + "_interval_inflow_m3s" for name in IDS[1:]
 )
+INFLOW_FORECAST_FILE = "five_reservoir_next7d_mean_inflow_forecast_1965_2024.csv"
+FORECAST_COLUMNS = tuple(column.replace("_inflow_m3s", "_inflow_forecast_next7d_mean_m3s")
+                         for column in FLOW_COLUMNS)
 DEFAULT_EVALUATION_YEARS = (1998, 1999, 1970, 1997, 2006)
 DEFAULT_EVALUATION_LABELS = ("extremely_wet", "wet", "normal", "dry", "extremely_dry")
 
@@ -80,6 +83,46 @@ def read_csv(path):
     return rows
 
 
+def load_inflow_forecast(path, dates):
+    """Read the supplied forecast issued for each action date, in IDS order.
+
+    Column names preserve the actual forcing definitions: WDD external inflow,
+    followed by downstream incremental inflows. No date shift, rolling average
+    of realized inflows, interpolation, or missing-value fallback is performed.
+    The CSV must contain exactly one complete row for every forcing date.
+    """
+    expected = ('date',) + FORECAST_COLUMNS
+    indices = {day: i for i, day in enumerate(dates)}
+    values = np.empty((len(dates), len(IDS)), dtype=np.float64)
+    seen = np.zeros(len(dates), dtype=bool)
+    with Path(path).open(encoding='utf-8-sig', newline='') as stream:
+        reader = csv.DictReader(stream)
+        headers = reader.fieldnames or []
+        if len(headers) != len(set(headers)) or set(headers) != set(expected):
+            raise ValueError('Missing, duplicate or unknown inflow forecast columns')
+        for row in reader:
+            if None in row or any(row.get(key) is None or not row[key].strip() for key in expected):
+                raise ValueError('Missing inflow forecast value at row '+str(reader.line_num))
+            try:
+                day = datetime.strptime(row['date'].strip(), '%Y-%m-%d').date()
+                forecast = np.asarray([float(row[column]) for column in FORECAST_COLUMNS])
+            except (ValueError, TypeError, OverflowError) as exc:
+                raise ValueError('Invalid inflow forecast at row '+str(reader.line_num)) from exc
+            if day not in indices:
+                raise ValueError('Inflow forecast date outside forcing calendar: '+str(day))
+            i = indices[day]
+            if seen[i]:
+                raise ValueError('Duplicate inflow forecast date: '+str(day))
+            if not np.isfinite(forecast).all() or (forecast < 0.).any():
+                raise ValueError('Inflow forecasts must be finite and nonnegative')
+            values[i] = forecast
+            seen[i] = True
+    if not seen.all():
+        raise ValueError('Inflow forecasts must cover every forcing date')
+    values.setflags(write=False)
+    return values
+
+
 class CascadeData:
     def __init__(self, root, config, experiment=None):
         self.root = Path(root).resolve()
@@ -114,6 +157,9 @@ class CascadeData:
         train_flow = self.external[self.train_mask]
         self.flow_mean = train_flow.mean(axis=0)
         self.flow_std = np.maximum(train_flow.std(axis=0), 1.0)
+        self.inflow_forecast = load_inflow_forecast(self.root / INFLOW_FORECAST_FILE, self.dates)
+        self.hashes[INFLOW_FORECAST_FILE] = hashlib.sha256(
+            (self.root / INFLOW_FORECAST_FILE).read_bytes()).hexdigest()
         initial = read_csv(self.root / rels[1])
         physics = read_csv(self.root / rels[3])
         if len(physics) != 5 or {r["reservoir_id"] for r in physics} != set(IDS):

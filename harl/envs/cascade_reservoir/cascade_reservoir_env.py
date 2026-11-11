@@ -8,7 +8,7 @@ from harl.envs.cascade_reservoir.reward import OperationReward, reward_settings
 from harl.envs.cascade_reservoir.episodes import (
     DEFAULT_EPISODE_DAYS, DEFAULT_ACTION_BINS, positive_integer)
 
-ACTOR_OBSERVATION_LAYOUT = 'local_neighbors_next_day_limits_v2'
+ACTOR_OBSERVATION_LAYOUT = 'local_neighbors_next_day_limits_next7d_forecast_v3'
 LOCAL_NEIGHBOR_FEATURES = (
     'storage_fraction', 'external_inflow_standardized', 'previous_release_fraction',
     'upstream_storage_fraction', 'upstream_external_inflow_standardized',
@@ -20,10 +20,12 @@ LOCAL_RULE_FEATURES = (
     'next_day_level_lower_fraction', 'next_day_level_upper_fraction',
 )
 TIME_FEATURES = ('season_sin', 'season_cos', 'episode_time_remaining_fraction')
+FORECAST_FEATURES = ('next7d_mean_inflow_forecast_standardized',)
 
 
 def actor_observation_features(use_daily_level_limits):
-    return LOCAL_NEIGHBOR_FEATURES + (LOCAL_RULE_FEATURES if use_daily_level_limits else ()) + TIME_FEATURES
+    return (LOCAL_NEIGHBOR_FEATURES + (LOCAL_RULE_FEATURES if use_daily_level_limits else ()) +
+            TIME_FEATURES + FORECAST_FEATURES)
 
 
 class CascadeReservoirEnv:
@@ -156,6 +158,9 @@ class CascadeReservoirEnv:
             return np.zeros((5,self.observation_size),dtype=np.float32)
         state = self.state()
         storage, external, release = state[:5], state[5:10], state[10:15]
+        # Supplied date-t forecast only. Reuse training-only actual-inflow
+        # statistics, with the same external/interval definitions and IDS order.
+        forecast = (self.data.inflow_forecast[self.index]-self.data.flow_mean)/self.data.flow_std
         upper = (self._next_state_storage_bounds(self.index)[1]-self.data.vmin)/self._storage_span
         observations = []
         for i in range(5):
@@ -165,6 +170,7 @@ class CascadeReservoirEnv:
             if self.level_limits is not None:
                 local.extend(state[start+i] for start in (18,23,28,33))
             local.extend(state[15:18])
+            local.append(forecast[i])
             observations.append(local)
         return np.asarray(observations,dtype=np.float32)
 

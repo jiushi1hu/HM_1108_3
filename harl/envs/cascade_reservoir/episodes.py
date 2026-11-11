@@ -55,6 +55,10 @@ class EpisodeData:
         self.start_year, self.end_year = min(self.source_years), max(self.source_years)
         self.external = source.external[self.source_indices].copy()
         self.external.setflags(write=False)
+        # Use the forecast issued on each original source date, including
+        # nonconsecutive held-out year joins; never average joined forcing rows.
+        self.inflow_forecast = source.inflow_forecast[self.source_indices].copy()
+        self.inflow_forecast.setflags(write=False)
         self.daily_level_limits = None
 
     def __getattr__(self, name):

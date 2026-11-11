@@ -8,7 +8,8 @@ train:
   use_linear_lr_decay: false
   use_proper_time_limits: true
 model:
-  # Actor inputs: 15 local/neighbor features (11 without supplied daily limits).
+  # Actor inputs: 15 local/neighbor features + one supplied 7-day inflow forecast
+  # (16 total, or 12 without supplied daily limits).
   # The centralized critic separately receives 38/18 system-state values.
   # Flattened encoder [64, 128, 256] + one 256-unit hidden head.
   # Actors and the critic build separate MLPs with this same layout.

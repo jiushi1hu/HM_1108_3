@@ -198,6 +198,31 @@ def write_log(path, algorithm, inline_context, labeled=True):
 
 
 class ComparisonIdentityTest(unittest.TestCase):
+    def test_forecast_input_hash_identifies_current_and_legacy_actor_dimensions(self):
+        for forecast, daily_limits, sharing in ((forecast, daily, sharing)
+                for forecast in (False, True) for daily in (False, True)
+                for sharing in (False, True)):
+            with self.subTest(forecast=forecast, daily_limits=daily_limits, sharing=sharing):
+                data = use_current_learning_objectives(payload())
+                raw_dim = (16 if daily_limits else 12) if forecast else (15 if daily_limits else 11)
+                for entry in data['runs']:
+                    run = entry['payload']
+                    context = run['comparison_context']
+                    context['shared_settings']['physical_config']['use_daily_level_limits'] = daily_limits
+                    if forecast:
+                        context['data_hashes']['five_reservoir_next7d_mean_inflow_forecast_1965_2024.csv'] = 'f'*64
+                    shared = sharing and entry['algorithm'] == 'mappo'
+                    context['shared_settings']['algo']['share_param'] = shared
+                    run['actor_architecture'].update(parameter_sharing=shared,
+                        network_count=1 if shared else 5, optimizer_count=1 if shared else 5,
+                        raw_observation_dim=raw_dim,
+                        network_observation_dim=raw_dim+5 if shared else raw_dim,
+                        identity_features='one_hot_reservoir_id' if shared else 'implicit_in_separate_actor')
+                compare.validate_comparison(data)
+                data['runs'][1]['payload']['actor_architecture']['network_observation_dim'] -= 1
+                with self.assertRaisesRegex(ValueError, 'dimensions/counts'):
+                    compare.validate_comparison(data)
+
     def test_team_objective_requires_scalar_happo_value_and_single_global_term(self):
         data = use_current_learning_objectives(payload())
         compare.validate_comparison(data)

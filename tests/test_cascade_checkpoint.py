@@ -325,8 +325,8 @@ class SharedCascadeCheckpointTest(CascadeCheckpointTest):
         self.assertEqual(len(stored['metadata']['model_hashes']['actors']), 1)
         self.assertTrue(stored['metadata']['actor_parameter_sharing'])
         self.assertEqual(stored['metadata']['agent_ids'], list(range(5)))
-        self.assertEqual(stored['metadata']['raw_actor_observation_dim'], 15)
-        self.assertEqual(stored['metadata']['actor_observation_dim'], 20)
+        self.assertEqual(stored['metadata']['raw_actor_observation_dim'], 16)
+        self.assertEqual(stored['metadata']['actor_observation_dim'], 21)
         before = torch.get_rng_state().clone()
         numpy_before, random_before = np.random.get_state(), random.getstate()
         frozen = load_checkpoint(self.path)
@@ -339,7 +339,7 @@ class SharedCascadeCheckpointTest(CascadeCheckpointTest):
         self.assertFalse(hasattr(frozen.actors[0].core, 'actor_optimizer'))
         first_linear = next(module for module in frozen.actors[0].actor.modules()
                             if isinstance(module, torch.nn.Linear))
-        self.assertEqual(first_linear.in_features, 20)
+        self.assertEqual(first_linear.in_features, 21)
         observation = self.runner.envs[0].actor_observations()[0:1]
         for original, view in zip(self.runner.actor, frozen.actors):
             with torch.no_grad():
@@ -356,7 +356,7 @@ class SharedCascadeCheckpointTest(CascadeCheckpointTest):
                 if change == 'ids':
                     stored['metadata']['agent_ids'] = [0, 0, 2, 3, 4]
                 elif change == 'input':
-                    stored['metadata']['actor_observation_dim'] = 15
+                    stored['metadata']['actor_observation_dim'] = 16
                 else:
                     stored['actors'] = stored['actors']*5
                     stored['metadata']['model_hashes']['actors'] *= 5
